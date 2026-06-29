@@ -1,0 +1,29 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: regshift-backend
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: regshift-backend
+  template:
+    metadata:
+      labels:
+        app: regshift-backend
+    spec:
+      containers:
+        - name: backend
+          image: regshift-backend:latest
+          ports:
+            - containerPort: 8000
+          envFrom:
+            - configMapRef:
+                name: regshift-config
+          volumeMounts:
+            - name: data
+              mountPath: /app/data
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: regshift-data

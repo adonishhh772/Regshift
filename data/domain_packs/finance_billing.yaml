@@ -1,0 +1,48 @@
+domain_name: finance_billing
+description: Invoice confirmation, billing transparency, recurring charges, refund terms.
+
+business_entities:
+  - sales_invoice
+  - payment_entry
+  - customer
+  - subscription
+
+keywords:
+  - invoice
+  - billing
+  - recurring
+  - cancellation
+  - refund
+  - customer
+  - charges
+  - confirmation
+  - finance
+
+likely_modules:
+  - accounts
+  - selling
+  - payments
+  - taxes
+
+risk_rules:
+  - if billing_transparency then financial_control high
+  - if customer_facing_change then compliance high
+  - if log_required then audit high
+
+test_templates:
+  - "customer sees recurring charges before {entity} confirmation"
+  - "cancellation fees displayed before confirmation"
+  - "refund terms displayed before confirmation"
+  - "confirmation blocked when disclosure missing"
+  - "audit log records disclosure acceptance"
+
+approval_roles:
+  - Finance Manager
+  - Billing Operations Lead
+  - Compliance Reviewer
+
+agent_limits:
+  can_generate_tests: true
+  can_generate_patch: true
+  can_auto_merge: false
+  requires_human_approval: true

@@ -1,0 +1,41 @@
+services:
+  neo4j:
+    image: neo4j:5-community
+    expose:
+      - "7474"
+      - "7687"
+    environment:
+      NEO4J_AUTH: neo4j/regshift-dev-password-minimum-32-chars
+    volumes:
+      - neo4j_data:/data
+
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./data:/app/data
+    environment:
+      DATA_DIR: /app/data
+      NEO4J_URI: bolt://neo4j:7687
+      NEO4J_USER: neo4j
+      NEO4J_PASSWORD: regshift-dev-password-minimum-32-chars
+      NEO4J_ENABLED: "true"
+    depends_on:
+      - neo4j
+
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+    ports:
+      - "3000:3000"
+    environment:
+      NEXT_PUBLIC_API_URL: http://localhost:8000
+    depends_on:
+      - backend
+
+volumes:
+  neo4j_data:

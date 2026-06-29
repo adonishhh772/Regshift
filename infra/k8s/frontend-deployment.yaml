@@ -1,0 +1,22 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: regshift-frontend
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: regshift-frontend
+  template:
+    metadata:
+      labels:
+        app: regshift-frontend
+    spec:
+      containers:
+        - name: frontend
+          image: regshift-frontend:latest
+          ports:
+            - containerPort: 3000
+          envFrom:
+            - configMapRef:
+                name: regshift-config

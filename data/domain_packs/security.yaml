@@ -1,0 +1,48 @@
+domain_name: security
+description: Role changes, financial permissions, administrator review, access control.
+
+business_entities:
+  - user
+  - role
+  - permission
+  - access_log
+
+keywords:
+  - role change
+  - permission
+  - financial
+  - administrator
+  - security
+  - access
+  - audit
+  - review
+  - role
+
+likely_modules:
+  - core
+  - permissions
+  - accounts
+  - workflow
+
+risk_rules:
+  - if financial_permission then permissions high
+  - if role_change then security high
+  - if log_required then audit high
+
+test_templates:
+  - "role change without financial permission follows existing flow"
+  - "financial permission grant requires administrator review"
+  - "role change event is logged"
+  - "non-administrator cannot approve financial permission grant"
+  - "existing user access unchanged for non-financial roles"
+
+approval_roles:
+  - System Administrator
+  - Security Officer
+  - Finance Controller
+
+agent_limits:
+  can_generate_tests: true
+  can_generate_patch: true
+  can_auto_merge: false
+  requires_human_approval: true

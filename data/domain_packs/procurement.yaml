@@ -1,0 +1,55 @@
+domain_name: procurement
+description: Purchase orders, supplier confirmation, approval thresholds, procurement controls.
+
+business_entities:
+  - purchase_order
+  - supplier
+  - purchase_invoice
+  - payment
+
+keywords:
+  - purchase order
+  - purchase_order
+  - supplier
+  - buying
+  - approval
+  - workflow
+  - finance
+  - grand_total
+  - submit
+  - confirm
+  - permission
+  - audit
+  - supplier confirmation
+  - amount
+  - total
+
+likely_modules:
+  - buying
+  - accounts
+  - workflow
+  - permissions
+  - communication
+
+risk_rules:
+  - if threshold_amount and supplier_confirmation then financial_control high
+  - if approval_role_required then permission high
+  - if log_required then audit high
+
+test_templates:
+  - "{entity} under {threshold} follows existing flow"
+  - "{entity} above {threshold} without approval is blocked"
+  - "{entity} above {threshold} with approval is allowed"
+  - "non-authorised user cannot approve"
+  - "approval event is logged"
+
+approval_roles:
+  - Finance Manager
+  - Procurement Owner
+  - Engineering Reviewer
+
+agent_limits:
+  can_generate_tests: true
+  can_generate_patch: true
+  can_auto_merge: false
+  requires_human_approval: true

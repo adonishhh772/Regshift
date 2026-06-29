@@ -1,0 +1,48 @@
+domain_name: hr_compliance
+description: Working hours compliance, manager review, HR policy enforcement.
+
+business_entities:
+  - employee
+  - timesheet
+  - attendance
+  - leave_application
+
+keywords:
+  - employee
+  - hours
+  - compliance
+  - manager review
+  - overtime
+  - working hours
+  - hr
+  - warning
+  - weekly
+
+likely_modules:
+  - hr
+  - payroll
+  - projects
+  - workflow
+
+risk_rules:
+  - if compliance_warning then regulatory high
+  - if manager_review then permissions medium
+  - if log_required then audit high
+
+test_templates:
+  - "employee under {threshold} hours follows existing flow"
+  - "employee over {threshold} hours triggers compliance warning"
+  - "manager review required for overtime cases"
+  - "non-manager cannot approve compliance exception"
+  - "compliance event is logged"
+
+approval_roles:
+  - HR Manager
+  - Line Manager
+  - Compliance Officer
+
+agent_limits:
+  can_generate_tests: true
+  can_generate_patch: true
+  can_auto_merge: false
+  requires_human_approval: true

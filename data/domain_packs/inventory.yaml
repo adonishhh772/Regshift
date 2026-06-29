@@ -1,0 +1,48 @@
+domain_name: inventory
+description: Stock transfers, warehouse approvals, dispatch controls, inventory movement.
+
+business_entities:
+  - stock_entry
+  - warehouse
+  - item
+  - delivery_note
+
+keywords:
+  - stock transfer
+  - warehouse
+  - dispatch
+  - inventory
+  - stock_entry
+  - approval
+  - warehouse manager
+  - movement
+  - transfer
+
+likely_modules:
+  - stock
+  - warehouse
+  - buying
+  - accounts
+
+risk_rules:
+  - if threshold_amount and dispatch then inventory_control high
+  - if approval_role_required then permission high
+  - if log_required then audit high
+
+test_templates:
+  - "{entity} under {threshold} follows existing flow"
+  - "{entity} above {threshold} without approval is blocked"
+  - "{entity} above {threshold} with approval is allowed"
+  - "non-authorised user cannot approve"
+  - "approval event is logged"
+
+approval_roles:
+  - Warehouse Manager
+  - Inventory Controller
+  - Engineering Reviewer
+
+agent_limits:
+  can_generate_tests: true
+  can_generate_patch: true
+  can_auto_merge: false
+  requires_human_approval: true

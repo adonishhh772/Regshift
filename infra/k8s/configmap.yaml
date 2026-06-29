@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: regshift-config
+data:
+  DATA_DIR: /app/data
+  NEXT_PUBLIC_API_URL: http://regshift-backend:8000
