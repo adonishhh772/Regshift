@@ -1,6 +1,6 @@
 "use client";
 
-import type { GovernanceEvaluation, OrchestrationStatus } from "@/lib/types";
+import type { GovernanceEvaluation } from "@/lib/types";
 import { useRegShiftStore } from "@/lib/store";
 
 interface ProductionGatePanelProps {

@@ -9,6 +9,7 @@ __pycache__/
 !*.env.example
 data/regshift.db
 data/generated_packs/*.md
+data/exports/
 data/repos/
 node_modules/
 frontend/.next/

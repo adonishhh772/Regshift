@@ -1,4 +1,5 @@
 import time
+import threading
 from typing import Any, TypeVar
 
 from pydantic import BaseModel
@@ -13,6 +14,10 @@ from app.services.llm.providers import provider_is_configured, structured_invoke
 from app.services.llm.schemas import LlmGatewayStatus, LlmInvocationMeta, ModelRoute
 
 SchemaT = TypeVar("SchemaT", bound=BaseModel)
+
+_LLM_CONCURRENCY_LIMIT = 4
+_LLM_SEMAPHORE = threading.BoundedSemaphore(_LLM_CONCURRENCY_LIMIT)
+_LLM_ACQUIRE_TIMEOUT_SECONDS = 30.0
 
 
 def parse_route_chain(raw_value: str) -> list[ModelRoute]:
@@ -81,30 +86,46 @@ def invoke_structured_task(
         return None, None
 
     last_error: Exception | None = None
-    for index, route in enumerate(routes):
-        started = time.perf_counter()
-        try:
-            with _trace_llm_step(task, route, session_id, index):
-                result = structured_invoke(
-                    route.provider,
-                    route.model,
-                    schema,
-                    system_prompt,
-                    user_prompt,
-                )
-            latency_ms = int((time.perf_counter() - started) * 1000)
+    acquired = _LLM_SEMAPHORE.acquire(timeout=_LLM_ACQUIRE_TIMEOUT_SECONDS)
+    if not acquired:
+        if settings.llm_fallback_to_rules:
             meta = LlmInvocationMeta(
                 task=task,
-                provider=route.provider,
-                model=route.model,
-                route_index=index,
-                latency_ms=latency_ms,
-                used_fallback_rules=False,
+                provider=routes[0].provider,
+                model=routes[0].model,
+                route_index=0,
+                used_fallback_rules=True,
             )
-            return result, meta
-        except Exception as error:
-            last_error = error
-            continue
+            return None, meta
+        raise TimeoutError("LLM concurrency limit reached; try again shortly")
+
+    try:
+        for index, route in enumerate(routes):
+            started = time.perf_counter()
+            try:
+                with _trace_llm_step(task, route, session_id, index):
+                    result = structured_invoke(
+                        route.provider,
+                        route.model,
+                        schema,
+                        system_prompt,
+                        user_prompt,
+                    )
+                latency_ms = int((time.perf_counter() - started) * 1000)
+                meta = LlmInvocationMeta(
+                    task=task,
+                    provider=route.provider,
+                    model=route.model,
+                    route_index=index,
+                    latency_ms=latency_ms,
+                    used_fallback_rules=False,
+                )
+                return result, meta
+            except Exception as error:
+                last_error = error
+                continue
+    finally:
+        _LLM_SEMAPHORE.release()
 
     if last_error is not None and settings.llm_fallback_to_rules:
         meta = LlmInvocationMeta(

@@ -1,12 +1,22 @@
 import json
+import logging
+import threading
+import time
 from typing import Any
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
+
+from app.logging_config import configure_logging
+from app.middleware.http_logging import HttpLoggingMiddleware
 
 from app.database import init_db, session_store
 from app.models.schemas import (
     AgentTraceEvent,
+    AgentWorkflowResumeRequest,
+    AgentWorkflowResult,
+    AgentWorkflowStartRequest,
     ClassifyRequest,
     ClassifyResponse,
     ContractApproveRequest,
@@ -16,28 +26,61 @@ from app.models.schemas import (
     GovernanceConfigResponse,
     GovernanceEvaluation,
     GraphResponse,
+    GraphNode,
+    GraphEdge,
+    GovernanceEvaluateResponse,
     HealthResponse,
     ImpactAnalyzeRequest,
     ImpactResponse,
     IndexStatusResponse,
+    DashboardStatsResponse,
+    DashboardDomainCount,
+    DomainPackListResponse,
+    DomainPackSummary,
     OrchestrationStatusResponse,
     PackGenerateRequest,
     PackResponse,
+    ImplementApplyRequest,
+    ImplementApplyResponse,
+    CodePatchRecord,
+    PackLoadRequest,
+    PackLoadResponse,
     PolicyIngestRequest,
     PolicyIngestResponse,
     PolicyListResponse,
+    PolicyActivateResponse,
     PolicyDocument,
     PolicyRule,
     RiskAssessment,
     RiskScoreRequest,
+    RiskScoreResponse,
+    SessionDetailResponse,
+    SessionListResponse,
+    SessionSummary,
     SimulationResponse,
+    SystemConfirmRequest,
+    SystemGraphResponse,
+    SystemIdentification,
+    SystemIngestAllResponse,
+    SystemIngestResponse,
+    SystemListResponse,
+    SystemSummary,
+    IdentifiedSystem,
     TestGenerateResponse,
     TraceStatus,
 )
 from app.orchestration.workflow import get_workflow_status, init_workflow_state, sync_workflow_state, validate_action
 from app.services.classifier import classify_change
+from app.services.domain_loader import load_all_domain_packs
 from app.services.contract_compiler import compile_contract, parse_contract_yaml
+from app.services.change_overlay_graph import apply_change_overlay
 from app.services.graph_builder import build_graph
+from app.services.erpnext_implementor import apply_change_contract_to_erpnext
+from app.services.system_catalog import ensure_workspace_repo_links, list_catalog_summaries
+from app.services.system_identifier import identify_systems
+from app.services.system_ingestor import ingest_all_systems, ingest_system
+from app.services.system_graph_store import load_system_graph
+from app.services.implementation_graph import extend_graph_with_implementation
 from app.services.impact_analyzer import analyze_impact
 from app.services.neo4j_store import load_session_graph, neo4j_status, persist_session_graph, trace_obligation_path
 from app.services.pack_generator import generate_change_pack, read_change_pack
@@ -45,7 +88,14 @@ from app.services.policy_governance import evaluate_production_gate
 from app.services.policy_compiler import build_governance_config
 from app.services.policy_ingestor import ingest_policy_document
 from app.services.policy_seed import seed_demo_policies
-from app.services.policy_store import get_active_policy, ingest_policy, list_policies
+from app.services.policy_store import (
+    activate_policy,
+    count_active_policies,
+    get_active_policy,
+    get_policy,
+    ingest_policy,
+    list_policies,
+)
 from app.services.langfuse_tracer import (
     WORKFLOW_STEP_CLASSIFY,
     WORKFLOW_STEP_CONTRACT_COMPILE,
@@ -61,9 +111,12 @@ from app.services.langfuse_tracer import (
     WORKFLOW_STEP_TEST_GENERATION,
     flush_traces,
     langfuse_status,
+    probe_langfuse_connectivity,
+    reset_langfuse_client,
     trace_nested_step,
     trace_policy_extraction,
     trace_regshift_step,
+    verify_langfuse_connection,
 )
 from app.services.workflow_trace import build_workflow_trace_summary
 from app.services.policy_graph import (
@@ -76,8 +129,16 @@ from app.services.risk_engine import score_risks
 from app.services.scanner import get_index_status, scan_index
 from app.services.simulator import run_simulation
 from app.services.test_generator import generate_tests
+from app.streaming import create_sse_response
+
+configure_logging()
+
+logger = logging.getLogger(__name__)
 
 app = FastAPI(title="RegShift API", version="1.0.0")
+
+_LANGFUSE_REFRESH_COOLDOWN_SECONDS = 60.0
+_last_langfuse_refresh_monotonic = 0.0
 
 app.add_middleware(
     CORSMiddleware,
@@ -86,22 +147,88 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.add_middleware(HttpLoggingMiddleware)
 
 
 @app.on_event("startup")
 def on_startup() -> None:
+    logger.info("RegShift API starting")
     init_db()
     settings_paths()
+    reset_langfuse_client()
+    threading.Thread(
+        target=_probe_neo4j_background,
+        name="neo4j-probe",
+        daemon=True,
+    ).start()
+    threading.Thread(
+        target=_probe_langfuse_background,
+        name="langfuse-probe",
+        daemon=True,
+    ).start()
+    threading.Thread(
+        target=_startup_background,
+        name="startup-background",
+        daemon=True,
+    ).start()
+    logger.info("RegShift API startup complete")
+
+
+def _startup_background() -> None:
+    try:
+        ensure_workspace_repo_links()
+        ingest_result = ingest_all_systems()
+        logger.info(
+            "System KG ingest complete total=%s succeeded=%s",
+            ingest_result.get("total"),
+            ingest_result.get("succeeded"),
+        )
+    except Exception as error:
+        logger.warning("System KG ingest failed error=%s", error)
     try:
         status = get_index_status()
         if status["file_count"] == 0:
+            logger.info("Code index empty — seeding procurement scan")
             scan_index("procurement")
-    except Exception:
-        pass
+        else:
+            logger.info("Code index ready file_count=%s", status["file_count"])
+    except Exception as error:
+        logger.warning("Startup index scan failed error=%s", error)
     try:
-        seed_demo_policies()
-    except Exception:
-        pass
+        from app.config import settings
+
+        if settings.seed_demo_policies:
+            seed_demo_policies()
+            logger.info("Demo policies seeded")
+    except Exception as error:
+        logger.warning("Demo policy seed failed error=%s", error)
+
+
+def _probe_neo4j_background() -> None:
+    try:
+        from app.services.neo4j_store import neo4j_status, probe_neo4j_connectivity
+
+        probe_neo4j_connectivity()
+        status = neo4j_status()
+        logger.info(
+            "Neo4j probe complete available=%s backend=%s",
+            status.get("available"),
+            status.get("backend"),
+        )
+    except Exception as error:
+        logger.warning("Neo4j probe failed error=%s", error)
+
+
+def _probe_langfuse_background() -> None:
+    try:
+        result = probe_langfuse_connectivity()
+        logger.info(
+            "Langfuse probe complete authenticated=%s reason=%s",
+            result.get("authenticated"),
+            result.get("reason"),
+        )
+    except Exception as error:
+        logger.warning("Langfuse probe failed error=%s", error)
 
 
 def settings_paths() -> None:
@@ -136,8 +263,13 @@ def _sync_policy_guidance(session_id: str, domain: str) -> dict[str, Any]:
     return guidance
 
 
+@app.get("/health/live")
+async def health_live() -> dict[str, str]:
+    return {"status": "ok"}
+
+
 @app.get("/health", response_model=HealthResponse)
-def health() -> HealthResponse:
+async def health() -> HealthResponse:
     return HealthResponse(
         status="ok",
         service="regshift-backend",
@@ -148,10 +280,131 @@ def health() -> HealthResponse:
     )
 
 
+@app.post("/api/langfuse/refresh")
+def langfuse_refresh() -> dict[str, Any]:
+    global _last_langfuse_refresh_monotonic
+    now = time.monotonic()
+    if now - _last_langfuse_refresh_monotonic < _LANGFUSE_REFRESH_COOLDOWN_SECONDS:
+        status = langfuse_status()
+        return {
+            "langfuse": status,
+            "authenticated": bool(status.get("authenticated")),
+            "reason": "Refresh cooldown active",
+            "skipped": True,
+        }
+    _last_langfuse_refresh_monotonic = now
+    reset_langfuse_client()
+    verification = verify_langfuse_connection()
+    status = langfuse_status()
+    return {"langfuse": status, **verification}
+
+
 @app.get("/api/index/status", response_model=IndexStatusResponse)
 def index_status() -> IndexStatusResponse:
     status = get_index_status()
     return IndexStatusResponse(**status)
+
+
+def _session_summary_from_row(row: dict[str, Any]) -> SessionSummary:
+    return SessionSummary(
+        id=row["id"],
+        business_text=row["business_text"],
+        domain=row.get("domain"),
+        contract_approved=bool(row.get("contract_approved")),
+        has_contract=bool(row.get("contract_yaml")),
+        pack_id=row.get("pack_id"),
+        created_at=row["created_at"],
+        updated_at=row["updated_at"],
+    )
+
+
+@app.get("/api/sessions", response_model=SessionListResponse)
+def list_sessions(limit: int = 50) -> SessionListResponse:
+    rows = session_store.list_sessions(limit=min(limit, 100))
+    sessions = [_session_summary_from_row(row) for row in rows]
+    return SessionListResponse(sessions=sessions, total=len(sessions))
+
+
+@app.get("/api/sessions/{session_id}", response_model=SessionDetailResponse)
+def get_session_detail(session_id: str) -> SessionDetailResponse:
+    session = session_store.get_session(session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail=f"Session '{session_id}' not found")
+
+    contract: dict[str, Any] | None = None
+    raw_contract = session.get("contract_json")
+    if raw_contract:
+        try:
+            parsed = json.loads(raw_contract)
+            contract = parsed if isinstance(parsed, dict) else None
+        except json.JSONDecodeError:
+            contract = None
+
+    return SessionDetailResponse(
+        id=session["id"],
+        business_text=session.get("business_text", ""),
+        domain=session.get("domain"),
+        contract_yaml=session.get("contract_yaml"),
+        contract=contract,
+        contract_approved=bool(session.get("contract_approved")),
+        pack_id=session.get("pack_id"),
+        created_at=session["created_at"],
+        updated_at=session["updated_at"],
+    )
+
+
+@app.get("/api/domain-packs", response_model=DomainPackListResponse)
+def list_domain_packs() -> DomainPackListResponse:
+    packs: list[DomainPackSummary] = []
+    for domain, data in load_all_domain_packs().items():
+        packs.append(
+            DomainPackSummary(
+                domain=domain,
+                display_name=str(data.get("display_name") or data.get("domain_name") or domain).replace("_", " ").title(),
+                description=str(data.get("description", "")),
+                process_count=len(data.get("processes", []) or []),
+                module_count=len(data.get("modules", []) or []),
+            )
+        )
+    packs.sort(key=lambda pack: pack.domain)
+    return DomainPackListResponse(packs=packs)
+
+
+@app.get("/api/dashboard/stats", response_model=DashboardStatsResponse)
+def dashboard_stats() -> DashboardStatsResponse:
+    rows = session_store.list_sessions(limit=100)
+    domain_counts: dict[str, int] = {}
+    sessions_with_contracts = 0
+    approved_contracts = 0
+    change_packs = 0
+    for row in rows:
+        domain = row.get("domain") or "unknown"
+        domain_counts[domain] = domain_counts.get(domain, 0) + 1
+        if row.get("contract_yaml"):
+            sessions_with_contracts += 1
+        if row.get("contract_approved"):
+            approved_contracts += 1
+        if row.get("pack_id"):
+            change_packs += 1
+    index_status = get_index_status()
+    policies = list_policies()
+    neo4j = neo4j_status()
+    return DashboardStatsResponse(
+        total_sessions=len(rows),
+        sessions_with_contracts=sessions_with_contracts,
+        approved_contracts=approved_contracts,
+        change_packs=change_packs,
+        indexed_files=index_status["file_count"],
+        index_source=index_status["source"],
+        active_policies=count_active_policies(),
+        domain_packs=len(load_all_domain_packs()),
+        sessions_by_domain=[
+            DashboardDomainCount(domain=domain, count=count)
+            for domain, count in sorted(domain_counts.items(), key=lambda item: item[1], reverse=True)
+        ],
+        graph_backend="neo4j" if neo4j.get("available") else str(neo4j.get("backend", "networkx_fallback")),
+        backend_status="ok",
+    )
 
 
 def _policy_document_from_row(policy: dict) -> PolicyDocument:
@@ -250,6 +503,28 @@ def policy_list() -> PolicyListResponse:
     )
 
 
+@app.get("/api/policy/{policy_id}", response_model=PolicyDocument)
+def policy_get(policy_id: str) -> PolicyDocument:
+    policy = get_policy(policy_id)
+    if policy is None:
+        raise HTTPException(status_code=404, detail=f"Policy '{policy_id}' not found")
+    return _policy_document_from_row(policy)
+
+
+@app.post("/api/policy/{policy_id}/activate", response_model=PolicyActivateResponse)
+def policy_activate(policy_id: str) -> PolicyActivateResponse:
+    policy = activate_policy(policy_id)
+    if policy is None:
+        raise HTTPException(status_code=404, detail=f"Policy '{policy_id}' not found or cannot be activated")
+    graph_result = persist_policy_knowledge_graph(policy["tenant_id"], policy)
+    flush_traces()
+    return PolicyActivateResponse(
+        policy=_policy_document_from_row(policy),
+        graph_backend=graph_result.get("backend"),
+        node_count=int(graph_result.get("node_count", 0)),
+    )
+
+
 @app.get("/api/policy/active/{domain}", response_model=PolicyDocument)
 def policy_active(domain: str) -> PolicyDocument:
     policy = get_active_policy(domain)
@@ -278,8 +553,16 @@ def policy_governance_config(domain: str) -> GovernanceConfigResponse:
 
 
 @app.get("/api/policy/graph/{domain}")
-def policy_graph(domain: str) -> dict[str, Any]:
-    return get_policy_graph_visualization(domain)
+def policy_graph(domain: str, policy_id: str | None = None) -> dict[str, Any]:
+    return get_policy_graph_visualization(domain, policy_id=policy_id)
+
+
+@app.post("/api/policy/rebuild-graph/{domain}")
+def rebuild_policy_graph(domain: str) -> dict[str, Any]:
+    policy = get_active_policy(domain)
+    if policy is None:
+        raise HTTPException(status_code=404, detail=f"No active policy for domain: {domain}")
+    return persist_policy_knowledge_graph(policy["tenant_id"], policy)
 
 
 @app.get("/api/policy/workflow-guidance/{domain}")
@@ -311,6 +594,91 @@ def index_scan() -> IndexStatusResponse:
             raise HTTPException(status_code=404, detail=str(error)) from error
 
 
+def _system_identification_to_model(payload: dict[str, Any]) -> SystemIdentification:
+    return SystemIdentification(
+        primary_system_id=payload.get("primary_system_id"),
+        systems=[
+            IdentifiedSystem(
+                system_id=item["system_id"],
+                name=item["name"],
+                vendor=item["vendor"],
+                confidence=item["confidence"],
+                role=item["role"],
+                ingested=item.get("ingested", False),
+                matched_signals=item.get("matched_signals", []),
+            )
+            for item in payload.get("systems", [])
+        ],
+        needs_confirmation=payload.get("needs_confirmation", False),
+        confirmed=payload.get("confirmed", False),
+    )
+
+
+@app.get("/api/systems", response_model=SystemListResponse)
+def systems_list() -> SystemListResponse:
+    summaries = list_catalog_summaries()
+    return SystemListResponse(
+        systems=[SystemSummary(**summary) for summary in summaries],
+        total=len(summaries),
+    )
+
+
+@app.post("/api/systems/ingest", response_model=SystemIngestAllResponse)
+def systems_ingest_all() -> SystemIngestAllResponse:
+    ensure_workspace_repo_links()
+    result = ingest_all_systems()
+    return SystemIngestAllResponse(
+        total=result["total"],
+        succeeded=result["succeeded"],
+        results=[SystemIngestResponse(**item) for item in result["results"]],
+    )
+
+
+@app.post("/api/systems/{system_id}/ingest", response_model=SystemIngestResponse)
+def systems_ingest_one(system_id: str) -> SystemIngestResponse:
+    result = ingest_system(system_id)
+    return SystemIngestResponse(**result)
+
+
+@app.get("/api/systems/graph", response_model=SystemGraphResponse)
+def systems_graph(system_id: str | None = None, limit: int = 500) -> SystemGraphResponse:
+    graph = load_system_graph(system_id=system_id, limit=limit)
+    return SystemGraphResponse(
+        system_id=system_id,
+        nodes=graph["nodes"],
+        edges=graph["edges"],
+    )
+
+
+@app.post("/api/systems/confirm", response_model=SystemIdentification)
+def systems_confirm(request: SystemConfirmRequest) -> SystemIdentification:
+    session = _resolve_session(request.session_id)
+    raw = session.get("target_systems_json")
+    if not raw:
+        raise HTTPException(status_code=400, detail="Identify systems before confirming")
+    payload = json.loads(raw)
+    catalog_ids = {item["system_id"] for item in payload.get("systems", [])}
+    selected = [system_id for system_id in request.system_ids if system_id in catalog_ids]
+    if not selected:
+        raise HTTPException(status_code=400, detail="No valid systems selected")
+
+    systems = [item for item in payload.get("systems", []) if item.get("system_id") in selected]
+    for index, item in enumerate(systems):
+        item["role"] = "primary" if index == 0 else "related"
+    updated = {
+        "primary_system_id": systems[0]["system_id"],
+        "systems": systems,
+        "needs_confirmation": False,
+        "confirmed": True,
+    }
+    session_store.update_session(
+        request.session_id,
+        target_systems_json=json.dumps(updated),
+        systems_confirmed=1,
+    )
+    return _system_identification_to_model(updated)
+
+
 @app.post("/api/change/classify", response_model=ClassifyResponse)
 def change_classify(request: ClassifyRequest) -> ClassifyResponse:
     session_id = request.session_id or session_store.create_session(request.text)
@@ -332,6 +700,19 @@ def change_classify(request: ClassifyRequest) -> ClassifyResponse:
         )
 
         session_store.update_session(session_id, domain=result["domain"], business_text=request.text)
+        systems_payload = identify_systems(request.text, result["domain"])
+        session_store.update_session(session_id, target_systems_json=json.dumps(systems_payload))
+        if systems_payload.get("primary_system_id"):
+            primary = next(
+                (item for item in systems_payload.get("systems", []) if item.get("role") == "primary"),
+                None,
+            )
+            if primary:
+                trace.emit(
+                    f"Identified target system: {primary.get('name')}",
+                    explanation=f"Vendor {primary.get('vendor')} · confidence {primary.get('confidence')}",
+                    evidence_count=len(systems_payload.get("systems", [])),
+                )
         session_store.save_trace(session_id)
         init_workflow_state(session_id, request.text, result["domain"])
         guidance = _sync_policy_guidance(session_id, result["domain"])
@@ -363,6 +744,7 @@ def change_classify(request: ClassifyRequest) -> ClassifyResponse:
             DomainAlternative(domain=alt["domain"], score=alt["score"])
             for alt in result.get("alternatives", [])
         ],
+        systems=_system_identification_to_model(systems_payload),
         trace=trace.get_events(),
     )
 
@@ -490,15 +872,20 @@ def impact_analyze(request: ImpactAnalyzeRequest) -> ImpactResponse:
         request.session_id,
         domain=domain,
     ) as step_output:
-        trace.emit("Queried Conduct-style system context", explanation="ERPNext indexed context loaded")
+        trace.emit("Queried stored system knowledge graph", explanation="Impact ranked from ingested system KG")
 
         with trace_nested_step(WORKFLOW_STEP_INDEX_SCAN) as index_output:
-            trace.emit("Scanned ERPNext code index", explanation="Ranking impacted files")
+            trace.emit("Loaded system catalog context", explanation="Registered business systems available")
             index_output["data"] = {"indexed": True}
 
         with trace_nested_step("analyze_impact") as impact_output:
-            impact = analyze_impact(contract, domain)
-            impact_output["data"] = {"file_count": len(impact["files"]), "modules": impact["modules"]}
+            impact = analyze_impact(contract, domain, session=session)
+            impact_output["data"] = {
+                "file_count": len(impact["files"]),
+                "modules": impact["modules"],
+                "impact_source": impact.get("impact_source"),
+                "target_systems": impact.get("target_systems", []),
+            }
 
         trace.emit(
             "Ranked impacted files",
@@ -521,6 +908,15 @@ def impact_analyze(request: ImpactAnalyzeRequest) -> ImpactResponse:
                 {"processes": impact["processes"], "modules": impact["modules"], "files": impact["files"]},
                 risks["risks"],
                 tests,
+            )
+            graph = apply_change_overlay(
+                graph,
+                contract,
+                {
+                    "files": impact["files"],
+                    "target_systems": impact.get("target_systems", []),
+                    "impact_source": impact.get("impact_source"),
+                },
             )
             graph_output["data"] = {"node_count": len(graph["nodes"]), "edge_count": len(graph["edges"])}
 
@@ -813,3 +1209,202 @@ def pack_get(pack_id: str) -> dict[str, str]:
     if content is None:
         raise HTTPException(status_code=404, detail="Pack not found")
     return {"pack_id": pack_id, "markdown": content}
+
+
+@app.post("/api/pack/load", response_model=PackLoadResponse)
+def pack_load(request: PackLoadRequest) -> PackLoadResponse:
+    pack_id = request.pack_id.replace(".md", "")
+    markdown = read_change_pack(pack_id)
+    if markdown is None:
+        raise HTTPException(status_code=404, detail=f"Change pack not found: {request.pack_id}")
+
+    filename = f"{pack_id}.md" if not pack_id.endswith(".md") else pack_id
+    session = _find_session_by_pack_id(pack_id)
+    if session is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No session linked to pack {pack_id}. Re-run the workflow or open from an active session.",
+        )
+
+    return PackLoadResponse(
+        session_id=session["id"],
+        pack_id=pack_id,
+        filename=filename,
+        markdown=markdown,
+        contract_yaml=session.get("contract_yaml"),
+        domain=session.get("domain"),
+    )
+
+
+@app.post("/api/implement/apply", response_model=ImplementApplyResponse)
+def implement_apply(request: ImplementApplyRequest) -> ImplementApplyResponse:
+    session = _resolve_session(request.session_id)
+    trace = session_store.get_trace(request.session_id)
+
+    allowed, reason = validate_action(request.session_id, "implement_apply")
+    if not allowed:
+        raise HTTPException(status_code=403, detail=reason)
+
+    agent_limits = _load_agent_limits(session)
+    if not agent_limits.get("can_generate_patch", True):
+        raise HTTPException(
+            status_code=403,
+            detail=agent_limits.get("blocked_message") or "Patch generation blocked by tenant policy",
+        )
+
+    pack_id = request.pack_id or session.get("pack_id")
+    result = apply_change_contract_to_erpnext(session)
+
+    graph_data = json.loads(session.get("graph_json") or '{"nodes": [], "edges": []}')
+    extended = extend_graph_with_implementation(graph_data, result.get("patches", []), pack_id=pack_id)
+
+    neo4j_result = persist_session_graph(
+        request.session_id,
+        extended["nodes"],
+        extended["edges"],
+    )
+    trace.emit(
+        "Applied ERPNext implementation patches",
+        explanation=f"{len(result.get('patches', []))} patch(es) written to {result.get('repo_path')}",
+        evidence_count=len(result.get("patches", [])),
+    )
+    trace.emit(
+        "Extended knowledge graph with implementation nodes",
+        explanation=f"{len(extended['nodes'])} nodes total ({neo4j_result.get('backend', 'session')})",
+    )
+
+    session_store.update_session(
+        request.session_id,
+        graph_json=json.dumps(
+            {
+                "nodes": [node.model_dump() for node in extended["nodes"]],
+                "edges": [edge.model_dump() for edge in extended["edges"]],
+            }
+        ),
+        implementation_json=json.dumps(result),
+    )
+    sync_workflow_state(request.session_id, {"implementation_applied": True})
+    session_store.save_trace(request.session_id)
+    flush_traces()
+
+    graph_response = GraphResponse(
+        session_id=request.session_id,
+        nodes=extended["nodes"],
+        edges=extended["edges"],
+    )
+
+    return ImplementApplyResponse(
+        session_id=request.session_id,
+        applied=bool(result.get("applied")),
+        reason=result.get("reason"),
+        repo_path=str(result.get("repo_path", "")),
+        patches=[CodePatchRecord(**patch) for patch in result.get("patches", [])],
+        graph=graph_response,
+        trace=trace.get_events(),
+    )
+
+
+def _find_session_by_pack_id(pack_id: str) -> dict[str, Any] | None:
+    normalized = pack_id.replace(".md", "")
+    for session in session_store.list_sessions(limit=200):
+        session_pack = session.get("pack_id")
+        if session_pack and session_pack.replace(".md", "") == normalized:
+            full = session_store.get_session(session["id"])
+            if full:
+                return full
+    return None
+
+
+def _load_agent_limits(session: dict[str, Any]) -> dict[str, Any]:
+    risks_json = session.get("risks_json")
+    if isinstance(risks_json, str) and risks_json.strip():
+        data = json.loads(risks_json)
+        limits = data.get("agent_limits")
+        if isinstance(limits, dict):
+            return limits
+    contract_yaml = session.get("contract_yaml") or ""
+    if contract_yaml:
+        contract = parse_contract_yaml(contract_yaml)
+        limits = contract.get("agent_limits")
+        if isinstance(limits, dict):
+            return limits
+    return {"can_generate_patch": True}
+
+
+@app.post("/api/stream/workflow/run")
+def stream_agent_workflow_run(request: AgentWorkflowStartRequest) -> StreamingResponse:
+    from app.orchestration.agent_runner import run_agent_start
+
+    return create_sse_response(lambda: run_agent_start(request.text, request.session_id))
+
+
+@app.post("/api/stream/workflow/resume")
+def stream_agent_workflow_resume(request: AgentWorkflowResumeRequest) -> StreamingResponse:
+    from app.orchestration.agent_runner import run_agent_resume
+
+    return create_sse_response(lambda: run_agent_resume(request.session_id))
+
+
+@app.post("/api/stream/change/classify")
+def stream_change_classify(request: ClassifyRequest) -> StreamingResponse:
+    return create_sse_response(lambda: change_classify(request))
+
+
+@app.post("/api/stream/contract/generate")
+def stream_contract_generate(request: ContractGenerateRequest) -> StreamingResponse:
+    return create_sse_response(lambda: contract_generate(request))
+
+
+@app.post("/api/stream/contract/approve")
+def stream_contract_approve(request: ContractApproveRequest) -> StreamingResponse:
+    return create_sse_response(lambda: contract_approve(request))
+
+
+@app.post("/api/stream/impact/analyze")
+def stream_impact_analyze(request: ImpactAnalyzeRequest) -> StreamingResponse:
+    return create_sse_response(lambda: impact_analyze(request))
+
+
+@app.post("/api/stream/risk/score")
+def stream_risk_score(request: RiskScoreRequest) -> StreamingResponse:
+    def handler() -> RiskScoreResponse:
+        assessment = risk_score(request)
+        trace = session_store.get_trace(request.session_id).get_events()
+        return RiskScoreResponse(
+            session_id=request.session_id,
+            assessment=assessment,
+            trace=trace,
+        )
+
+    return create_sse_response(handler)
+
+
+@app.post("/api/stream/tests/generate")
+def stream_tests_generate(session_id: str | None = None) -> StreamingResponse:
+    return create_sse_response(lambda: tests_generate(session_id))
+
+
+@app.post("/api/stream/simulation/run")
+def stream_simulation_run(session_id: str | None = None) -> StreamingResponse:
+    return create_sse_response(lambda: simulation_run(session_id))
+
+
+@app.get("/api/stream/governance/evaluate")
+def stream_governance_evaluate(session_id: str) -> StreamingResponse:
+    def handler() -> GovernanceEvaluateResponse:
+        evaluation = governance_evaluate(session_id)
+        orchestration = orchestration_status(session_id)
+        trace = session_store.get_trace(session_id).get_events()
+        return GovernanceEvaluateResponse(
+            session_id=session_id,
+            evaluation=evaluation,
+            orchestration=orchestration,
+            trace=trace,
+        )
+
+    return create_sse_response(handler)
+
+
+@app.post("/api/stream/pack/generate")
+def stream_pack_generate(request: PackGenerateRequest) -> StreamingResponse:
+    return create_sse_response(lambda: pack_generate(request))

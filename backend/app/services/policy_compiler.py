@@ -14,20 +14,20 @@ from app.services.policy_store import get_active_policy
 def parse_policy_record_to_governance(policy: dict[str, Any], domain: str) -> dict[str, Any]:
     rules_payload = policy["rules"]
     rule_items = rules_payload.get("rules", []) if isinstance(rules_payload, dict) else rules_payload
-    obligations = [
+    obligations = list(dict.fromkeys(
         rule["value"]
         for rule in rule_items
         if rule["type"] == RULE_TYPE_OBLIGATION
-    ]
+    ))
     if not obligations and isinstance(rules_payload, dict):
-        obligations = list(rules_payload.get("obligations", []))
+        obligations = list(dict.fromkeys(rules_payload.get("obligations", [])))
 
     threshold_rules = [rule for rule in rule_items if rule["type"] == RULE_TYPE_THRESHOLD]
-    approval_roles = [
+    approval_roles = list(dict.fromkeys(
         rule["value"]
         for rule in rule_items
         if rule["type"] == RULE_TYPE_APPROVAL_ROLE
-    ]
+    ))
     if not approval_roles and isinstance(rules_payload, dict):
         approval_roles = list(rules_payload.get("approval_roles", []))
 
@@ -217,8 +217,16 @@ def _build_policy_citations(
     obligations: list[str],
     governance: dict[str, Any],
 ) -> dict[str, str]:
+    precomputed = governance.get("citations")
+    if isinstance(precomputed, dict) and precomputed:
+        return {
+            obligation: precomputed[obligation]
+            for obligation in obligations
+            if obligation in precomputed
+        }
+
     citations: dict[str, str] = {}
-    for rule in governance["rules"]:
+    for rule in governance.get("rules", []):
         if rule["type"] != RULE_TYPE_OBLIGATION:
             continue
         if rule["value"] in obligations:

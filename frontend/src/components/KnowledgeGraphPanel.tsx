@@ -22,9 +22,13 @@ const LEGEND_ITEMS = [
   { type: "BusinessProcess", color: "#dbeafe" },
   { type: "ERPModule", color: "#e0e7ff" },
   { type: "File", color: "#f3f4f6" },
+  { type: "SystemKGFile", color: "#bae6fd" },
+  { type: "TargetSystem", color: "#ddd6fe" },
   { type: "Risk", color: "#fecaca" },
   { type: "Test", color: "#d1fae5" },
   { type: "ApprovalRole", color: "#fce7f3" },
+  { type: "ImplementationPlan", color: "#ccfbf1" },
+  { type: "CodeChange", color: "#a5f3fc" },
 ];
 
 interface KnowledgeGraphPanelProps {
@@ -207,6 +211,12 @@ function KnowledgeGraphCanvas({ onBuildGraph, contractApproved }: KnowledgeGraph
           {selectedNode.metadata?.path ? (
             <p className="mt-2 font-mono text-xs text-slate-600">{String(selectedNode.metadata.path)}</p>
           ) : null}
+          {selectedNode.metadata?.file_path ? (
+            <p className="mt-2 font-mono text-xs text-slate-600">{String(selectedNode.metadata.file_path)}</p>
+          ) : null}
+          {selectedNode.metadata?.description ? (
+            <p className="mt-2 text-xs text-slate-600">{String(selectedNode.metadata.description)}</p>
+          ) : null}
           {selectedNode.metadata?.snippet ? (
             <p className="mt-2 text-xs text-slate-600">{String(selectedNode.metadata.snippet)}</p>
           ) : null}
@@ -242,7 +252,16 @@ function traceImpactPath(
   const path = [obligationId];
   let current = obligationId;
 
-  for (const preferredType of ["BusinessProcess", "ERPModule", "File", "Risk", "Test", "ApprovalRole"]) {
+  for (const preferredType of [
+    "BusinessProcess",
+    "ERPModule",
+    "File",
+    "CodeChange",
+    "Risk",
+    "Test",
+    "ApprovalRole",
+    "ImplementationPlan",
+  ]) {
     const neighbor = (adjacency[current] ?? []).find((target) => typeMap[target] === preferredType);
     if (neighbor) {
       path.push(neighbor);

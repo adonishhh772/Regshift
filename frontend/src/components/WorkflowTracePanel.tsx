@@ -16,6 +16,7 @@ const STEP_STATUS_STYLES: Record<string, string> = {
 
 export function WorkflowTracePanel() {
   const sessionId = useRegShiftStore((state) => state.sessionId);
+  const workflowTraceVersion = useRegShiftStore((state) => state.workflowTraceVersion);
   const langfuseUiUrl = useRegShiftStore((state) => state.langfuseUiUrl);
   const setLangfuseUiUrl = useRegShiftStore((state) => state.setLangfuseUiUrl);
   const [traceSummary, setTraceSummary] = useState<WorkflowTraceSummary | null>(null);
@@ -38,7 +39,7 @@ export function WorkflowTracePanel() {
 
   useEffect(() => {
     loadTraceSummary().catch(() => undefined);
-  }, [loadTraceSummary]);
+  }, [loadTraceSummary, workflowTraceVersion]);
 
   if (!sessionId) {
     return null;

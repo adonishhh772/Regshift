@@ -149,7 +149,7 @@ def get_trace_path(graph_data: dict[str, Any], obligation_node_id: str) -> list[
     current = obligation_node_id
     visited = {current}
 
-    preferred_types = ["BusinessProcess", "ERPModule", "File", "Risk", "Test", "ApprovalRole"]
+    preferred_types = ["BusinessProcess", "ERPModule", "File", "SystemKGFile", "TargetSystem", "Risk", "Test", "ApprovalRole"]
     type_map = {node.id: node.type for node in graph_data["nodes"]}
 
     for preferred in preferred_types:

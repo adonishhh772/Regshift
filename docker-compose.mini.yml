@@ -24,6 +24,8 @@ services:
       dockerfile: backend/Dockerfile
     ports:
       - "8000:8000"
+    env_file:
+      - .env
     volumes:
       - ./data:/app/data
       - ./backend/app:/app/app
@@ -33,20 +35,31 @@ services:
       NEO4J_USER: neo4j
       NEO4J_PASSWORD: regshift-dev-password-minimum-32-chars
       NEO4J_ENABLED: "true"
-      LANGFUSE_ENABLED: "true"
-      LANGFUSE_PUBLIC_KEY: pk-lf-regshift-dev-public-key
-      LANGFUSE_SECRET_KEY: sk-lf-regshift-dev-secret-key-min-32-chars
+      LANGFUSE_ENABLED: ${LANGFUSE_ENABLED:-false}
+      LANGFUSE_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY:-${LANGFUSE_INIT_PROJECT_PUBLIC_KEY:-pk-lf-regshift-dev-public-key}}
+      LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY:-${LANGFUSE_INIT_PROJECT_SECRET_KEY:-sk-lf-regshift-dev-secret-key-min-32-chars}}
+      LANGFUSE_INIT_PROJECT_ID: ${LANGFUSE_INIT_PROJECT_ID:-regshift-project}
       LANGFUSE_HOST: http://langfuse-web:3000
-      LANGFUSE_UI_URL: http://localhost:3001
-    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+      LANGFUSE_UI_URL: ${LANGFUSE_UI_URL:-http://localhost:3001}
+      LLM_GATEWAY_ENABLED: ${LLM_GATEWAY_ENABLED:-true}
+      LLM_FALLBACK_TO_RULES: ${LLM_FALLBACK_TO_RULES:-true}
+      LLM_ROUTE_CLASSIFY: ${LLM_ROUTE_CLASSIFY:-openai:gpt-4.1-mini,gateway:deepseek-chat}
+      LLM_ROUTE_CONTRACT: ${LLM_ROUTE_CONTRACT:-openai:gpt-4.1-mini,gateway:deepseek-chat}
+      LLM_ROUTE_POLICY_INGEST: ${LLM_ROUTE_POLICY_INGEST:-openai:gpt-4.1-mini,gateway:deepseek-chat}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      LLM_GATEWAY_URL: ${LLM_GATEWAY_URL:-}
+      LLM_GATEWAY_API_KEY: ${LLM_GATEWAY_API_KEY:-}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 2 --timeout-graceful-shutdown 5 --limit-concurrency 100 --log-level info --access-log
     depends_on:
       neo4j:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health')"]
-      interval: 10s
-      timeout: 5s
-      retries: 3
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/live', timeout=3)"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 20s
 
   frontend:
     image: node:20-alpine

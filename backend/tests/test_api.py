@@ -54,6 +54,13 @@ async def test_health(client):
 
 
 @pytest.mark.asyncio
+async def test_health_live(client):
+    response = await client.get("/health/live")
+    assert response.status_code == 200
+    assert response.json() == {"status": "ok"}
+
+
+@pytest.mark.asyncio
 async def test_procurement_golden_path(client):
     classify = await client.post("/api/change/classify", json={"text": GOLDEN_TEXT})
     assert classify.status_code == 200
@@ -199,6 +206,46 @@ async def test_policy_ingest_and_governance_config(client):
 
 
 @pytest.mark.asyncio
+async def test_policy_list_and_activate(client):
+    first = await client.post(
+        "/api/policy/ingest",
+        json={
+            "title": "Procurement Policy v1",
+            "source_text": DEMO_POLICY,
+            "domain": "procurement",
+        },
+    )
+    assert first.status_code == 200
+    first_policy_id = first.json()["policy"]["id"]
+
+    second = await client.post(
+        "/api/policy/ingest",
+        json={
+            "title": "Procurement Policy v2",
+            "source_text": DEMO_POLICY,
+            "domain": "procurement",
+        },
+    )
+    assert second.status_code == 200
+
+    listing = await client.get("/api/policy/list")
+    assert listing.status_code == 200
+    body = listing.json()
+    procurement_policies = [policy for policy in body["policies"] if policy["domain"] == "procurement"]
+    assert len(procurement_policies) == 3
+    assert "procurement" in body["active_domains"]
+
+    detail = await client.get(f"/api/policy/{first_policy_id}")
+    assert detail.status_code == 200
+    assert detail.json()["status"] == "archived"
+
+    activated = await client.post(f"/api/policy/{first_policy_id}/activate")
+    assert activated.status_code == 200
+    assert activated.json()["policy"]["status"] == "active"
+    assert activated.json()["node_count"] >= 0
+
+
+@pytest.mark.asyncio
 async def test_governance_blocked_without_policy(client):
     connection = get_connection()
     connection.execute("DELETE FROM tenant_policies")
@@ -216,3 +263,25 @@ async def test_governance_blocked_without_policy(client):
     guidance = await client.get("/api/policy/workflow-guidance/procurement")
     assert guidance.status_code == 200
     assert guidance.json()["configured"] is False
+
+
+@pytest.mark.asyncio
+async def test_get_session_detail_returns_contract(client):
+    classify = await client.post("/api/change/classify", json={"text": GOLDEN_TEXT})
+    session_id = classify.json()["session_id"]
+    contract = await client.post(
+        "/api/contract/generate",
+        json={"text": GOLDEN_TEXT, "session_id": session_id},
+    )
+    assert contract.status_code == 200
+
+    detail = await client.get(f"/api/sessions/{session_id}")
+    assert detail.status_code == 200
+    payload = detail.json()
+    assert payload["id"] == session_id
+    assert payload["contract_yaml"]
+    assert "finance_approval_required" in payload["contract"]["required_behaviour"]
+    assert payload["contract_approved"] is False
+
+    missing = await client.get("/api/sessions/does-not-exist")
+    assert missing.status_code == 404

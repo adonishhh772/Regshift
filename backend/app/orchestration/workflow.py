@@ -232,6 +232,7 @@ def validate_action(session_id: str, action: str) -> tuple[bool, str | None]:
         status["tests_generated"] = bool(session.get("tests_json"))
         status["simulation_run"] = bool(session.get("simulation_json"))
         status["governance_passed"] = bool(session.get("governance_json"))
+        status["pack_generated"] = bool(session.get("pack_id"))
         if not status.get("policy_guidance"):
             from app.services.policy_graph import extract_workflow_guidance
 
@@ -247,6 +248,7 @@ def validate_action(session_id: str, action: str) -> tuple[bool, str | None]:
         "simulation_run": ["tests_generated"],
         "governance_evaluate": ["simulation_run"],
         "pack_generate": ["governance_passed"],
+        "implement_apply": ["pack_generated"],
     }
     flags = {
         "policy_graph_loaded": bool(status.get("policy_guidance", {}).get("configured")),
@@ -256,6 +258,7 @@ def validate_action(session_id: str, action: str) -> tuple[bool, str | None]:
         "tests_generated": status.get("tests_generated", False),
         "simulation_run": status.get("simulation_run", False),
         "governance_passed": _governance_passed(session),
+        "pack_generated": bool(session and session.get("pack_id")),
     }
     required = requirements.get(action, [])
     for requirement in required:

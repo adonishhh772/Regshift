@@ -15,6 +15,8 @@ const TYPE_BADGE: Record<string, string> = {
   Test: "TEST",
   ApprovalRole: "APR",
   EvidenceSnippet: "EVD",
+  ImplementationPlan: "PLAN",
+  CodeChange: "PATCH",
 };
 
 function GraphNodeComponent({ data, selected }: NodeProps) {

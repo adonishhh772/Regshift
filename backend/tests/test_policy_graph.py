@@ -68,6 +68,34 @@ def test_policy_graph_visualization(seeded_policy_graph):
     graph = get_policy_graph_visualization("procurement")
     assert len(graph["nodes"]) >= 1
     assert graph["backend"] in {"neo4j", "networkx_fallback"}
+    assert graph["policy_id"] == seeded_policy_graph["id"]
+
+
+def test_policy_graph_visualization_by_policy_id(seeded_policy_graph):
+    graph = get_policy_graph_visualization(
+        "procurement",
+        policy_id=seeded_policy_graph["id"],
+    )
+    assert graph["policy_id"] == seeded_policy_graph["id"]
+    assert graph["policy_title"] == seeded_policy_graph["title"]
+    assert len(graph["nodes"]) >= 1
+
+
+def test_merge_policy_into_contract_with_neo4j_governance(seeded_policy_graph):
+    from app.services.policy_compiler import merge_policy_into_contract
+
+    merged = merge_policy_into_contract(
+        {
+            "domain": "procurement",
+            "entity": "purchase_order",
+            "required_behaviour": ["finance_approval_required"],
+            "approval_roles": [],
+            "risks": {},
+        },
+        "procurement",
+    )
+    assert merged["policy_source"]["policy_id"] == seeded_policy_graph["id"]
+    assert "finance_approval_required" in merged["policy_citations"]
 
 
 def test_langfuse_status_disabled_by_default():

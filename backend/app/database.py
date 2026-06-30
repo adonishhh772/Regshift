@@ -15,8 +15,10 @@ def get_db_path() -> Path:
 
 
 def get_connection() -> sqlite3.Connection:
-    connection = sqlite3.connect(str(get_db_path()))
+    connection = sqlite3.connect(str(get_db_path()), timeout=30.0)
     connection.row_factory = sqlite3.Row
+    connection.execute("PRAGMA journal_mode=WAL")
+    connection.execute("PRAGMA busy_timeout=30000")
     return connection
 
 
@@ -80,6 +82,39 @@ def init_db() -> None:
 
         CREATE INDEX IF NOT EXISTS idx_tenant_policies_tenant_domain
             ON tenant_policies(tenant_id, domain, status);
+
+        CREATE TABLE IF NOT EXISTS registered_systems (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            vendor TEXT,
+            connector TEXT,
+            ingest_status TEXT NOT NULL DEFAULT 'pending',
+            file_count INTEGER NOT NULL DEFAULT 0,
+            node_count INTEGER NOT NULL DEFAULT 0,
+            edge_count INTEGER NOT NULL DEFAULT 0,
+            last_ingest TEXT,
+            config_json TEXT
+        );
+
+        CREATE TABLE IF NOT EXISTS system_graph_nodes (
+            id TEXT PRIMARY KEY,
+            system_id TEXT NOT NULL,
+            label TEXT NOT NULL,
+            type TEXT NOT NULL,
+            metadata_json TEXT
+        );
+
+        CREATE TABLE IF NOT EXISTS system_graph_edges (
+            id TEXT PRIMARY KEY,
+            system_id TEXT NOT NULL,
+            source_id TEXT NOT NULL,
+            target_id TEXT NOT NULL,
+            label TEXT,
+            type TEXT
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_system_graph_nodes_system
+            ON system_graph_nodes(system_id, type);
         """
     )
     connection.commit()
@@ -94,6 +129,56 @@ def _migrate_schema(connection: sqlite3.Connection) -> None:
     if "governance_json" not in columns:
         connection.execute("ALTER TABLE change_sessions ADD COLUMN governance_json TEXT")
         connection.commit()
+    if "implementation_json" not in columns:
+        connection.execute("ALTER TABLE change_sessions ADD COLUMN implementation_json TEXT")
+        connection.commit()
+    if "target_systems_json" not in columns:
+        connection.execute("ALTER TABLE change_sessions ADD COLUMN target_systems_json TEXT")
+        connection.commit()
+    if "systems_confirmed" not in columns:
+        connection.execute("ALTER TABLE change_sessions ADD COLUMN systems_confirmed INTEGER DEFAULT 0")
+        connection.commit()
+    _ensure_system_graph_tables(connection)
+
+
+def _ensure_system_graph_tables(connection: sqlite3.Connection) -> None:
+    connection.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS registered_systems (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            vendor TEXT,
+            connector TEXT,
+            ingest_status TEXT NOT NULL DEFAULT 'pending',
+            file_count INTEGER NOT NULL DEFAULT 0,
+            node_count INTEGER NOT NULL DEFAULT 0,
+            edge_count INTEGER NOT NULL DEFAULT 0,
+            last_ingest TEXT,
+            config_json TEXT
+        );
+
+        CREATE TABLE IF NOT EXISTS system_graph_nodes (
+            id TEXT PRIMARY KEY,
+            system_id TEXT NOT NULL,
+            label TEXT NOT NULL,
+            type TEXT NOT NULL,
+            metadata_json TEXT
+        );
+
+        CREATE TABLE IF NOT EXISTS system_graph_edges (
+            id TEXT PRIMARY KEY,
+            system_id TEXT NOT NULL,
+            source_id TEXT NOT NULL,
+            target_id TEXT NOT NULL,
+            label TEXT,
+            type TEXT
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_system_graph_nodes_system
+            ON system_graph_nodes(system_id, type);
+        """
+    )
+    connection.commit()
 
 
 class SessionStore:
@@ -140,6 +225,20 @@ class SessionStore:
         if row is None:
             return None
         return _row_to_dict(row)
+
+    def list_sessions(self, limit: int = 50) -> list[dict[str, Any]]:
+        connection = get_connection()
+        rows = connection.execute(
+            """
+            SELECT id, business_text, domain, contract_yaml, contract_approved, pack_id, created_at, updated_at
+            FROM change_sessions
+            ORDER BY created_at DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+        connection.close()
+        return [_row_to_dict(row) for row in rows]
 
     def update_session(self, session_id: str, **fields: Any) -> None:
         if not fields:

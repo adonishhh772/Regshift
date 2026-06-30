@@ -1,0 +1,90 @@
+systems:
+  - id: erpnext
+    name: ERPNext
+    vendor: frappe
+    connector: generic_git
+    domains:
+      - procurement
+      - inventory
+      - finance_billing
+    keywords:
+      - erpnext
+      - frappe
+      - purchase order
+      - doctype
+      - supplier
+      - buying
+    source:
+      type: git
+      path: repos/erpnext
+
+  - id: regshift-backend
+    name: RegShift Backend
+    vendor: regshift
+    connector: generic_git
+    domains:
+      - procurement
+      - finance_billing
+      - hr_compliance
+      - inventory
+      - security
+    keywords:
+      - fastapi
+      - regshift
+      - change contract
+      - impact
+    source:
+      type: git
+      path: ../backend
+
+  - id: regshift-frontend
+    name: RegShift Frontend
+    vendor: regshift
+    connector: generic_git
+    domains:
+      - procurement
+      - finance_billing
+      - hr_compliance
+      - inventory
+      - security
+    keywords:
+      - next.js
+      - react
+      - workflow
+      - frontend
+    source:
+      type: git
+      path: ../frontend
+
+  - id: salesforce-crm
+    name: Salesforce CRM
+    vendor: salesforce
+    connector: metadata_export
+    domains:
+      - finance_billing
+      - procurement
+    keywords:
+      - salesforce
+      - apex
+      - opportunity
+      - flow
+    source:
+      type: export
+      path: exports/salesforce
+
+  - id: sap-s4
+    name: SAP S/4HANA
+    vendor: sap
+    connector: metadata_export
+    domains:
+      - procurement
+      - finance_billing
+      - inventory
+    keywords:
+      - sap
+      - bapi
+      - purchase requisition
+      - mm
+    source:
+      type: export
+      path: exports/sap

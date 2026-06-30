@@ -9,7 +9,7 @@ from app.services.policy_compiler import (
 from app.services.policy_ingestor import ingest_policy_document
 from app.services.policy_graph import persist_policy_knowledge_graph
 from app.services.policy_seed import seed_demo_policies
-from app.services.policy_store import get_active_policy, ingest_policy
+from app.services.policy_store import activate_policy, get_active_policy, ingest_policy, list_policies
 
 
 DEMO_POLICY = """
@@ -143,3 +143,51 @@ def test_seed_demo_policies_idempotent():
     second = seed_demo_policies()
     assert first is not None or get_active_policy("procurement") is not None
     assert second is None
+    policies = list_policies()
+    active_domains = {policy["domain"] for policy in policies if policy["status"] == "active"}
+    assert "procurement" in active_domains
+    assert "inventory" in active_domains
+    assert "finance_billing" in active_domains
+
+
+def test_ingest_policy_archives_previous_version(seeded_policy):
+    parsed = ingest_policy_document(
+        title="Test Procurement Policy v2",
+        source_text=DEMO_POLICY,
+        domain="procurement",
+    )
+    second = ingest_policy(
+        title="Test Procurement Policy v2",
+        source_text=DEMO_POLICY,
+        rules=parsed,
+        domain="procurement",
+    )
+    policies = list_policies()
+    procurement_policies = [policy for policy in policies if policy["domain"] == "procurement"]
+    assert len(procurement_policies) == 2
+    archived = [policy for policy in procurement_policies if policy["status"] == "archived"]
+    active = [policy for policy in procurement_policies if policy["status"] == "active"]
+    assert len(archived) == 1
+    assert len(active) == 1
+    assert active[0]["id"] == second["id"]
+    assert archived[0]["id"] == seeded_policy["id"]
+
+
+def test_activate_policy_restores_archived_version(seeded_policy):
+    parsed = ingest_policy_document(
+        title="Test Procurement Policy v2",
+        source_text=DEMO_POLICY,
+        domain="procurement",
+    )
+    second = ingest_policy(
+        title="Test Procurement Policy v2",
+        source_text=DEMO_POLICY,
+        rules=parsed,
+        domain="procurement",
+    )
+    restored = activate_policy(seeded_policy["id"])
+    assert restored is not None
+    assert restored["status"] == "active"
+    assert get_active_policy("procurement")["id"] == seeded_policy["id"]
+    second_row = next(policy for policy in list_policies() if policy["id"] == second["id"])
+    assert second_row["status"] == "archived"

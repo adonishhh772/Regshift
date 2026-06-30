@@ -2,6 +2,7 @@
 
 import { RefreshCw } from "lucide-react";
 
+import { BackendStatusBadge } from "@/components/BackendStatusBadge";
 import { api } from "@/lib/api";
 import { useRegShiftStore } from "@/lib/store";
 
@@ -46,6 +47,7 @@ export function TopBar() {
         </span>
       </div>
       <div className="flex items-center gap-4">
+        <BackendStatusBadge />
         <div className="text-right">
           <p className="text-xs uppercase tracking-wider text-slate-500">System Context</p>
           <p className="text-sm font-medium">ERPNext</p>

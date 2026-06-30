@@ -8,6 +8,62 @@ export interface AgentTraceEvent {
   evidence_count?: number | null;
 }
 
+export interface AgentWorkflowResult {
+  session_id: string;
+  status: "completed" | "paused" | "blocked";
+  pause_gate?: string | null;
+  summary: string;
+  domain?: string | null;
+  confidence?: number | null;
+  contract_yaml?: string | null;
+  contract_approved: boolean;
+  pack_filename?: string | null;
+  pack_markdown?: string | null;
+  governance_passed?: boolean | null;
+  processes: string[];
+  modules: string[];
+  impacted_file_count: number;
+  graph_node_count: number;
+  graph_edge_count: number;
+  tests_count: number;
+  simulation_summary?: string | null;
+  autonomous_change_allowed?: boolean | null;
+  trace: AgentTraceEvent[];
+}
+
+export interface IdentifiedSystem {
+  system_id: string;
+  name: string;
+  vendor: string;
+  confidence: number;
+  role: string;
+  ingested: boolean;
+  matched_signals: string[];
+}
+
+export interface SystemIdentification {
+  primary_system_id: string | null;
+  systems: IdentifiedSystem[];
+  needs_confirmation: boolean;
+  confirmed: boolean;
+}
+
+export interface SystemSummary {
+  id: string;
+  name: string;
+  vendor: string;
+  connector: string;
+  domains: string[];
+  source_type: string;
+  source_path: string | null;
+  source_available: boolean;
+  ingest_status: string | null;
+  file_count: number;
+  node_count: number;
+  edge_count: number;
+  last_ingest: string | null;
+}
+
 export interface GraphNode {
   id: string;
   label: string;
@@ -22,6 +78,29 @@ export interface GraphEdge {
   target: string;
   label: string;
   type: string;
+}
+
+export interface CodePatchRecord {
+  patch_id: string;
+  file_path: string;
+  obligation: string;
+  change_type: string;
+  description: string;
+  lines_added: number;
+}
+
+export interface ImplementApplyResponse {
+  session_id: string;
+  applied: boolean;
+  reason?: string | null;
+  repo_path: string;
+  patches: CodePatchRecord[];
+  graph?: {
+    session_id: string;
+    nodes: GraphNode[];
+    edges: GraphEdge[];
+  } | null;
+  trace: AgentTraceEvent[];
 }
 
 export interface ImpactedFile {
@@ -113,7 +192,14 @@ export interface HealthStatus {
   status: string;
   service: string;
   neo4j: { available: boolean; backend: string };
-  langfuse?: { available: boolean; enabled: boolean; ui_url?: string };
+  langfuse?: {
+    available: boolean;
+    enabled: boolean;
+    authenticated?: boolean;
+    ui_url?: string;
+    project_id?: string;
+    auth_error?: string;
+  };
   orchestration: string;
 }
 
@@ -121,7 +207,10 @@ export interface PolicyGraphResponse {
   nodes: GraphNode[];
   edges: GraphEdge[];
   backend: string;
-  policy_id?: string;
+  policy_id?: string | null;
+  policy_title?: string | null;
+  policy_version?: number | null;
+  domain?: string | null;
 }
 
 export interface WorkflowGuidance {
@@ -206,4 +295,99 @@ export interface GovernanceConfig {
   approval_roles: string[];
   agent_limits: Record<string, boolean | string>;
   citations: Record<string, string>;
+}
+
+export type ChatMessageRole = "user" | "assistant" | "system";
+
+export interface ThinkingStep {
+  id: string;
+  action: string;
+  status: TraceStatus;
+  resultTag?: string;
+  description?: string;
+}
+
+export interface ChatThinkingBlock {
+  headline: string;
+  steps: ThinkingStep[];
+  isStreaming: boolean;
+  subagentsExpanded: boolean;
+  toolCallCount: number;
+}
+
+export interface ChatContractApprovalBlock {
+  contractYaml: string;
+  domain: string | null;
+  approved: boolean;
+}
+
+export interface ChatMessage {
+  id: string;
+  role: ChatMessageRole;
+  content: string;
+  timestamp: string;
+  status?: TraceStatus;
+  thinking?: ChatThinkingBlock;
+  contractApproval?: ChatContractApprovalBlock;
+}
+
+export type BackendConnectionStatus = "checking" | "online" | "offline";
+
+export interface SessionSummary {
+  id: string;
+  business_text: string;
+  domain: string | null;
+  contract_approved: boolean;
+  has_contract: boolean;
+  pack_id: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface SessionListResponse {
+  sessions: SessionSummary[];
+  total: number;
+}
+
+export interface SessionDetail {
+  id: string;
+  business_text: string;
+  domain: string | null;
+  contract_yaml: string | null;
+  contract: Record<string, unknown> | null;
+  contract_approved: boolean;
+  pack_id: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface DomainPackSummary {
+  domain: string;
+  display_name: string;
+  description: string;
+  process_count: number;
+  module_count: number;
+}
+
+export interface DomainPackListResponse {
+  packs: DomainPackSummary[];
+}
+
+export interface DashboardDomainCount {
+  domain: string;
+  count: number;
+}
+
+export interface DashboardStats {
+  total_sessions: number;
+  sessions_with_contracts: number;
+  approved_contracts: number;
+  change_packs: number;
+  indexed_files: number;
+  index_source: string;
+  active_policies: number;
+  domain_packs: number;
+  sessions_by_domain: DashboardDomainCount[];
+  graph_backend: string;
+  backend_status: string;
 }

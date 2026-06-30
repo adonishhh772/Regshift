@@ -11,6 +11,7 @@ class Settings(BaseSettings):
     domain_packs_dir: Path | None = None
     demo_seed_path: Path | None = None
     erpnext_repo_path: Path | None = None
+    systems_catalog_path: Path | None = None
     generated_packs_dir: Path | None = None
 
     llm_gateway_enabled: bool = True
@@ -41,6 +42,8 @@ class Settings(BaseSettings):
     langfuse_secret_key: str | None = None
     langfuse_host: str = "http://localhost:3001"
     langfuse_ui_url: str = "http://localhost:3001"
+    langfuse_project_id: str = "regshift-project"
+    seed_demo_policies: bool = True
 
     def model_post_init(self, __context: object) -> None:
         import os
@@ -50,16 +53,28 @@ class Settings(BaseSettings):
         self.domain_packs_dir = self.data_dir / "domain_packs"
         self.demo_seed_path = self.data_dir / "demo_seed" / "erpnext_index.json"
         self.erpnext_repo_path = self.data_dir / "repos" / "erpnext"
+        self.systems_catalog_path = self.data_dir / "systems" / "catalog.yaml"
         self.generated_packs_dir = self.data_dir / "generated_packs"
         self.neo4j_uri = os.environ.get("NEO4J_URI", self.neo4j_uri)
         self.neo4j_user = os.environ.get("NEO4J_USER", self.neo4j_user)
         self.neo4j_password = os.environ.get("NEO4J_PASSWORD", self.neo4j_password)
         self.neo4j_enabled = os.environ.get("NEO4J_ENABLED", "true").lower() == "true"
         self.langfuse_enabled = os.environ.get("LANGFUSE_ENABLED", "false").lower() == "true"
-        self.langfuse_public_key = os.environ.get("LANGFUSE_PUBLIC_KEY", self.langfuse_public_key)
-        self.langfuse_secret_key = os.environ.get("LANGFUSE_SECRET_KEY", self.langfuse_secret_key)
+        self.langfuse_public_key = os.environ.get("LANGFUSE_PUBLIC_KEY") or os.environ.get(
+            "LANGFUSE_INIT_PROJECT_PUBLIC_KEY",
+            self.langfuse_public_key,
+        )
+        self.langfuse_secret_key = os.environ.get("LANGFUSE_SECRET_KEY") or os.environ.get(
+            "LANGFUSE_INIT_PROJECT_SECRET_KEY",
+            self.langfuse_secret_key,
+        )
         self.langfuse_host = os.environ.get("LANGFUSE_HOST", self.langfuse_host)
         self.langfuse_ui_url = os.environ.get("LANGFUSE_UI_URL", self.langfuse_ui_url)
+        self.langfuse_project_id = os.environ.get(
+            "LANGFUSE_INIT_PROJECT_ID",
+            os.environ.get("LANGFUSE_PROJECT_ID", self.langfuse_project_id),
+        )
+        self.seed_demo_policies = os.environ.get("SEED_DEMO_POLICIES", "true").lower() == "true"
         self.llm_gateway_enabled = os.environ.get("LLM_GATEWAY_ENABLED", str(self.llm_gateway_enabled)).lower() == "true"
         self.llm_fallback_to_rules = os.environ.get(
             "LLM_FALLBACK_TO_RULES",

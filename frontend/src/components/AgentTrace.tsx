@@ -1,5 +1,7 @@
 "use client";
 
+import { useEffect, useRef } from "react";
+
 import { useRegShiftStore } from "@/lib/store";
 
 const STATUS_COLORS: Record<string, string> = {
@@ -12,17 +14,22 @@ const STATUS_COLORS: Record<string, string> = {
 
 export function AgentTrace() {
   const trace = useRegShiftStore((state) => state.trace);
+  const traceEndRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    traceEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [trace]);
 
   return (
     <aside
       data-testid="agent-trace"
-      className="flex w-[320px] shrink-0 flex-col border-l border-[#e8e4df] bg-white/80 backdrop-blur-xl"
+      className="flex h-full min-h-0 w-[320px] shrink-0 flex-col border-l border-[#e8e4df] bg-white/80 backdrop-blur-xl"
     >
-      <div className="border-b border-[#e8e4df] px-4 py-4">
+      <div className="shrink-0 border-b border-[#e8e4df] px-4 py-4">
         <p className="text-xs font-semibold uppercase tracking-wider text-slate-500">Tool Calls</p>
         <h3 className="text-sm font-semibold">Agent Trace</h3>
       </div>
-      <div className="flex-1 overflow-y-auto p-4">
+      <div className="min-h-0 flex-1 overflow-y-auto p-4">
         <div className="space-y-3">
           {trace.length === 0 ? (
             <p className="text-xs text-slate-500">Agent activity will appear here as you progress through the workflow.</p>
@@ -45,6 +52,7 @@ export function AgentTrace() {
               </div>
             ))
           )}
+          <div ref={traceEndRef} />
         </div>
       </div>
     </aside>

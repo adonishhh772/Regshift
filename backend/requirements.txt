@@ -6,7 +6,7 @@ pyyaml==6.0.2
 networkx==3.4.2
 neo4j==5.27.0
 langgraph==0.2.60
-langchain-core==0.3.29
+langchain-core==0.3.31
 langchain-openai==0.2.14
 langchain-anthropic==0.3.3
 langfuse>=3.0.0

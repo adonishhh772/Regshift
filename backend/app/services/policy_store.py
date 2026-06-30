@@ -99,6 +99,51 @@ def has_active_policy(domain: str, tenant_id: str = DEFAULT_TENANT_ID) -> bool:
     return get_active_policy(domain, tenant_id) is not None
 
 
+def activate_policy(policy_id: str, tenant_id: str = DEFAULT_TENANT_ID) -> dict[str, Any] | None:
+    policy = get_policy(policy_id)
+    if policy is None or policy["tenant_id"] != tenant_id:
+        return None
+    domain = policy.get("domain")
+    if not domain:
+        return None
+
+    now = _now_iso()
+    connection = get_connection()
+    connection.execute(
+        """
+        UPDATE tenant_policies
+        SET status = ?, updated_at = ?
+        WHERE tenant_id = ? AND domain = ? AND status = ?
+        """,
+        (POLICY_STATUS_ARCHIVED, now, tenant_id, domain, POLICY_STATUS_ACTIVE),
+    )
+    connection.execute(
+        """
+        UPDATE tenant_policies
+        SET status = ?, updated_at = ?
+        WHERE id = ? AND tenant_id = ?
+        """,
+        (POLICY_STATUS_ACTIVE, now, policy_id, tenant_id),
+    )
+    connection.commit()
+    connection.close()
+    return get_policy(policy_id)
+
+
+def count_active_policies(tenant_id: str = DEFAULT_TENANT_ID) -> int:
+    connection = get_connection()
+    row = connection.execute(
+        """
+        SELECT COUNT(*) AS policy_count
+        FROM tenant_policies
+        WHERE tenant_id = ? AND status = ?
+        """,
+        (tenant_id, POLICY_STATUS_ACTIVE),
+    ).fetchone()
+    connection.close()
+    return int(row["policy_count"]) if row else 0
+
+
 def _next_version(connection: Any, tenant_id: str, domain: str | None) -> int:
     if not domain:
         return 1

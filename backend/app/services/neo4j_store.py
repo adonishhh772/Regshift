@@ -1,10 +1,29 @@
 from typing import Any
+import json
 
 from app.config import settings
 from app.models.schemas import GraphEdge, GraphNode
 
 _driver = None
 _neo4j_available: bool | None = None
+
+
+def _serialize_graph_metadata(metadata: dict[str, Any]) -> str:
+    return json.dumps(metadata)
+
+
+def _deserialize_graph_metadata(raw_metadata: Any) -> dict[str, Any]:
+    if raw_metadata is None:
+        return {}
+    if isinstance(raw_metadata, dict):
+        return raw_metadata
+    if isinstance(raw_metadata, str):
+        try:
+            parsed = json.loads(raw_metadata)
+            return parsed if isinstance(parsed, dict) else {}
+        except json.JSONDecodeError:
+            return {}
+    return {}
 
 
 def _get_driver():
@@ -21,6 +40,7 @@ def _get_driver():
             _driver = GraphDatabase.driver(
                 settings.neo4j_uri,
                 auth=(settings.neo4j_user, settings.neo4j_password),
+                connection_timeout=5.0,
             )
             _driver.verify_connectivity()
             _neo4j_available = True
@@ -31,11 +51,16 @@ def _get_driver():
         return None
 
 
+def probe_neo4j_connectivity() -> None:
+    _get_driver()
+
+
 def neo4j_status() -> dict[str, Any]:
-    driver = _get_driver()
-    if driver is None:
+    if not settings.neo4j_enabled:
         return {"available": False, "backend": "networkx_fallback"}
-    return {"available": True, "backend": "neo4j", "uri": settings.neo4j_uri}
+    if _neo4j_available is True and _driver is not None:
+        return {"available": True, "backend": "neo4j", "uri": settings.neo4j_uri}
+    return {"available": False, "backend": "networkx_fallback"}
 
 
 def persist_session_graph(session_id: str, nodes: list[GraphNode], edges: list[GraphEdge]) -> dict[str, Any]:
@@ -75,7 +100,7 @@ def persist_session_graph(session_id: str, nodes: list[GraphNode], edges: list[G
                 label=node.label,
                 type=node.type,
                 status=node.status,
-                metadata=node.metadata,
+                metadata=_serialize_graph_metadata(node.metadata),
             )
 
         for edge in edges:
@@ -129,7 +154,7 @@ def load_session_graph(session_id: str) -> dict[str, Any] | None:
             label=row["label"],
             type=row["type"],
             status=row.get("status") or "completed",
-            metadata=row.get("metadata") or {},
+            metadata=_deserialize_graph_metadata(row.get("metadata")),
         )
         for row in node_rows
     ]
