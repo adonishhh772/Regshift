@@ -1,3 +1,24 @@
+"""LangGraph workflow orchestration for RegShift change sessions.
+
+Architecture
+------------
+LangGraph owns the **state machine**: step order, human-interrupt gates, and
+prerequisite enforcement via ``validate_action()``. FastAPI endpoints invoke
+the domain services (impact analysis, risk scoring, test generation,
+simulation) and persist results to the session store; LangGraph state is then
+synced with ``sync_workflow_state()``.
+
+This split is intentional for production:
+- **LangGraph** — durable workflow state, gate interrupts, audit trail of steps
+- **FastAPI services** — idempotent, testable business logic callable from API or batch jobs
+
+Nodes that only advance flags (``node_impact_analysis``, ``node_risk_scoring``,
+``node_simulation``) mark steps complete when the corresponding API endpoint
+has already run the service and stored JSON on the session. Nodes with real work
+(``node_policy_graph_load``) run lightweight orchestration inline when the graph
+is invoked directly.
+"""
+
 from typing import Any
 
 from langgraph.checkpoint.memory import MemorySaver
@@ -75,10 +96,12 @@ def node_human_approval_gate(state: WorkflowState) -> WorkflowState:
 
 
 def node_index_scan(state: WorkflowState) -> WorkflowState:
+    """Marks index scan complete; actual scan runs via POST /api/index/scan."""
     return {**state, "index_scanned": True, "current_step": "impact_analysis"}
 
 
 def node_impact_analysis(state: WorkflowState) -> WorkflowState:
+    """Gate flag only — impact work runs in POST /api/impact/analyze (analyze_impact service)."""
     return {**state, "impact_analyzed": True, "current_step": "graph_persist"}
 
 
@@ -87,14 +110,17 @@ def node_graph_persist(state: WorkflowState) -> WorkflowState:
 
 
 def node_risk_scoring(state: WorkflowState) -> WorkflowState:
+    """Gate flag only — risk scoring runs in POST /api/risk/score (score_risks service)."""
     return {**state, "risks_scored": True, "current_step": "test_generation"}
 
 
 def node_test_generation(state: WorkflowState) -> WorkflowState:
+    """Gate flag only — tests run in POST /api/tests/generate (generate_tests service)."""
     return {**state, "tests_generated": True, "current_step": "simulation"}
 
 
 def node_simulation(state: WorkflowState) -> WorkflowState:
+    """Gate flag only — simulation runs in POST /api/simulation/run (run_simulation service)."""
     return {**state, "simulation_run": True, "current_step": "governance_gate"}
 
 

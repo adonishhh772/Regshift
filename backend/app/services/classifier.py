@@ -1,16 +1,48 @@
 from typing import Any
 
 from app.services.domain_loader import load_all_domain_packs
+from app.services.llm.constants import CONFIDENCE_DETERMINISTIC, CONFIDENCE_LLM, LlmTaskName
+from app.services.llm.gateway import invoke_structured_task
+from app.services.llm.prompts import CLASSIFY_SYSTEM_PROMPT, build_classify_user_prompt
+from app.services.llm.schemas import LlmClassifyResult
 
 
-def classify_change(text: str, override_domain: str | None = None) -> dict[str, Any]:
+def classify_change(
+    text: str,
+    override_domain: str | None = None,
+    session_id: str | None = None,
+) -> dict[str, Any]:
     if override_domain:
         return {
             "domain": override_domain,
             "confidence": 1.0,
             "alternatives": [],
+            "source": CONFIDENCE_DETERMINISTIC,
         }
 
+    deterministic = _classify_deterministic(text)
+    llm_result, meta = invoke_structured_task(
+        LlmTaskName.CLASSIFY,
+        LlmClassifyResult,
+        CLASSIFY_SYSTEM_PROMPT,
+        build_classify_user_prompt(text, list(load_all_domain_packs().keys())),
+        session_id=session_id,
+    )
+
+    if llm_result is None:
+        deterministic["source"] = CONFIDENCE_DETERMINISTIC
+        if meta is not None and meta.used_fallback_rules:
+            deterministic["llm_fallback"] = True
+        return deterministic
+
+    merged = _merge_classify_results(deterministic, llm_result)
+    merged["source"] = CONFIDENCE_LLM
+    if meta is not None:
+        merged["llm_meta"] = meta.model_dump()
+    return merged
+
+
+def _classify_deterministic(text: str) -> dict[str, Any]:
     normalized = text.lower()
     packs = load_all_domain_packs()
     scores: dict[str, float] = {}
@@ -46,4 +78,26 @@ def classify_change(text: str, override_domain: str | None = None) -> dict[str, 
         "domain": top_domain,
         "confidence": round(confidence, 2),
         "alternatives": alternatives,
+    }
+
+
+def _merge_classify_results(
+    deterministic: dict[str, Any],
+    llm_result: LlmClassifyResult,
+) -> dict[str, Any]:
+    packs = load_all_domain_packs()
+    domain = llm_result.domain if llm_result.domain in packs else deterministic["domain"]
+    confidence = round(llm_result.confidence, 2)
+    alternatives = [
+        {"domain": alt.domain, "score": round(alt.score, 2)}
+        for alt in llm_result.alternatives
+        if alt.domain in packs
+    ]
+    if not alternatives:
+        alternatives = deterministic.get("alternatives", [])
+    return {
+        "domain": domain,
+        "confidence": confidence,
+        "alternatives": alternatives,
+        "reasoning": llm_result.reasoning,
     }

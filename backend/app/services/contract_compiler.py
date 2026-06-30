@@ -4,12 +4,67 @@ from typing import Any
 import yaml
 
 from app.services.domain_loader import load_domain_pack
+from app.services.llm.constants import (
+    CONFIDENCE_DETERMINISTIC,
+    CONFIDENCE_HYBRID,
+    CONFIDENCE_LLM,
+    CONFIDENCE_POLICY_SOURCED,
+    LlmTaskName,
+)
+from app.services.llm.gateway import invoke_structured_task
+from app.services.llm.prompts import CONTRACT_COMPILE_SYSTEM_PROMPT, build_contract_user_prompt
+from app.services.llm.schemas import LlmContractExtraction
 from app.services.policy_compiler import merge_policy_into_contract
 from app.services.policy_constants import OBLIGATION_PATTERNS, WORD_NUMBERS
 
 
-def compile_contract(text: str, domain: str, tenant_id: str | None = None) -> dict[str, Any]:
+def compile_contract(
+    text: str,
+    domain: str,
+    tenant_id: str | None = None,
+    session_id: str | None = None,
+) -> dict[str, Any]:
     pack = load_domain_pack(domain)
+    deterministic_contract = _compile_deterministic(text, domain, pack)
+    llm_extraction, meta = invoke_structured_task(
+        LlmTaskName.CONTRACT_COMPILE,
+        LlmContractExtraction,
+        CONTRACT_COMPILE_SYSTEM_PROMPT,
+        build_contract_user_prompt(text, domain, pack),
+        session_id=session_id,
+    )
+
+    if llm_extraction is not None:
+        contract = _merge_llm_extraction(deterministic_contract, llm_extraction, pack, domain)
+        confidence = CONFIDENCE_LLM
+        if meta is not None and meta.used_fallback_rules:
+            confidence = CONFIDENCE_HYBRID
+    else:
+        contract = deterministic_contract
+        confidence = CONFIDENCE_DETERMINISTIC
+
+    contract = merge_policy_into_contract(contract, domain, tenant_id)
+    if "policy_source" in contract:
+        confidence = CONFIDENCE_POLICY_SOURCED
+
+    contract_yaml = yaml.dump(contract, sort_keys=False, default_flow_style=False)
+    result: dict[str, Any] = {
+        "contract": contract,
+        "contract_yaml": contract_yaml,
+        "confidence": confidence,
+    }
+    if meta is not None:
+        result["llm_meta"] = meta.model_dump()
+    if llm_extraction is not None and llm_extraction.reasoning:
+        result["reasoning"] = llm_extraction.reasoning
+    return result
+
+
+def parse_contract_yaml(contract_yaml: str) -> dict[str, Any]:
+    return yaml.safe_load(contract_yaml)
+
+
+def _compile_deterministic(text: str, domain: str, pack: dict[str, Any]) -> dict[str, Any]:
     normalized = text.lower()
     threshold = _extract_threshold(normalized, domain)
     entity = _extract_entity(pack, normalized)
@@ -19,7 +74,7 @@ def compile_contract(text: str, domain: str, tenant_id: str | None = None) -> di
     risks = _build_risks(obligations, pack)
     required_tests = _build_tests(pack, entity, threshold)
 
-    contract: dict[str, Any] = {
+    return {
         "domain": domain,
         "entity": entity,
         "trigger": {"condition": f"total_amount > {threshold}"} if threshold else {},
@@ -30,19 +85,64 @@ def compile_contract(text: str, domain: str, tenant_id: str | None = None) -> di
         "required_tests": required_tests,
     }
 
-    contract = merge_policy_into_contract(contract, domain, tenant_id)
-    policy_sourced = "policy_source" in contract
 
-    contract_yaml = yaml.dump(contract, sort_keys=False, default_flow_style=False)
-    return {
-        "contract": contract,
-        "contract_yaml": contract_yaml,
-        "confidence": "policy_sourced" if policy_sourced else "deterministic",
+def _merge_llm_extraction(
+    deterministic: dict[str, Any],
+    extraction: LlmContractExtraction,
+    pack: dict[str, Any],
+    domain: str,
+) -> dict[str, Any]:
+    merged = dict(deterministic)
+    entity = extraction.entity or merged.get("entity", "entity")
+    merged["entity"] = entity.replace(" ", "_").lower()
+
+    threshold = extraction.threshold_amount
+    if threshold is None:
+        threshold = _extract_threshold_from_trigger(merged.get("trigger", {}))
+    if threshold is not None:
+        merged["trigger"] = {"condition": f"total_amount > {threshold}"}
+
+    llm_obligations = list(dict.fromkeys(extraction.obligations))
+    deterministic_obligations = list(merged.get("required_behaviour", []))
+    merged["required_behaviour"] = list(dict.fromkeys(llm_obligations + deterministic_obligations))
+
+    llm_roles = list(dict.fromkeys(extraction.approval_roles))
+    pack_roles = pack.get("approval_roles", [])
+    merged["approval_roles"] = list(dict.fromkeys(llm_roles + pack_roles + merged.get("approval_roles", [])))
+
+    merged["exceptions"] = _build_exceptions(
+        threshold or _default_threshold(domain),
+        merged["entity"],
+        domain,
+    )
+    merged["risks"] = _build_risks(merged["required_behaviour"], pack)
+    merged["required_tests"] = _build_tests(
+        pack,
+        merged["entity"],
+        threshold or _default_threshold(domain),
+    )
+    return merged
+
+
+def _extract_threshold_from_trigger(trigger: dict[str, Any]) -> int | None:
+    condition = trigger.get("condition", "")
+    if ">" not in condition:
+        return None
+    try:
+        return int(condition.split(">")[-1].strip())
+    except ValueError:
+        return None
+
+
+def _default_threshold(domain: str) -> int:
+    defaults: dict[str, int] = {
+        "procurement": 25000,
+        "inventory": 10000,
+        "finance_billing": 0,
+        "hr_compliance": 48,
+        "security": 0,
     }
-
-
-def parse_contract_yaml(contract_yaml: str) -> dict[str, Any]:
-    return yaml.safe_load(contract_yaml)
+    return defaults.get(domain, 25000)
 
 
 def _extract_threshold(normalized: str, domain: str) -> int:

@@ -205,6 +205,7 @@ class HealthResponse(BaseModel):
     service: str
     neo4j: dict[str, Any]
     langfuse: dict[str, Any] = Field(default_factory=dict)
+    llm: dict[str, Any] = Field(default_factory=dict)
     orchestration: str = "langgraph"
 
 

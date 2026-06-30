@@ -71,6 +71,7 @@ from app.services.policy_graph import (
     get_policy_graph_visualization,
     persist_policy_knowledge_graph,
 )
+from app.services.llm.gateway import gateway_status
 from app.services.risk_engine import score_risks
 from app.services.scanner import get_index_status, scan_index
 from app.services.simulator import run_simulation
@@ -142,6 +143,7 @@ def health() -> HealthResponse:
         service="regshift-backend",
         neo4j=neo4j_status(),
         langfuse=langfuse_status(),
+        llm=gateway_status(),
         orchestration="langgraph",
     )
 
@@ -180,6 +182,7 @@ def policy_ingest(request: PolicyIngestRequest) -> PolicyIngestResponse:
             title=request.title,
             source_text=request.source_text,
             domain=request.domain,
+            session_id=policy_session_id,
         )
         stored = ingest_policy(
             title=parsed["title"],
@@ -321,7 +324,7 @@ def change_classify(request: ClassifyRequest) -> ClassifyResponse:
     ) as step_output:
         trace.emit("Parsed business change", explanation="Extracting intent from business request")
 
-        result = classify_change(request.text)
+        result = classify_change(request.text, session_id=session_id)
         trace.emit(
             f"Classified domain as {result['domain']}",
             explanation=f"Confidence {result['confidence']}",
@@ -373,7 +376,7 @@ def contract_generate(request: ContractGenerateRequest) -> ContractResponse:
     session = _resolve_session(session_id)
     trace = session_store.get_trace(session_id)
 
-    domain = request.domain or session.get("domain") or classify_change(request.text)["domain"]
+    domain = request.domain or session.get("domain") or classify_change(request.text, session_id=session_id)["domain"]
     _sync_policy_guidance(session_id, domain)
     allowed, reason = validate_action(session_id, "contract_generate")
     if not allowed:
@@ -395,7 +398,7 @@ def contract_generate(request: ContractGenerateRequest) -> ContractResponse:
                 evidence_count=len(guidance.get("required_obligations", [])),
             )
 
-        compiled = compile_contract(request.text, domain)
+        compiled = compile_contract(request.text, domain, session_id=session_id)
         step_output["data"] = {
             "obligations": compiled["contract"].get("required_behaviour", []),
             "confidence": compiled["confidence"],
@@ -504,7 +507,7 @@ def impact_analyze(request: ImpactAnalyzeRequest) -> ImpactResponse:
         )
 
         with trace_nested_step(WORKFLOW_STEP_TEST_GENERATION) as tests_output:
-            tests = [test.model_dump() for test in generate_tests(contract, domain)]
+            tests = [test.model_dump() for test in generate_tests(contract, domain, session_id=session["id"])]
             tests_output["data"] = {"test_count": len(tests)}
 
         with trace_nested_step(WORKFLOW_STEP_RISK_SCORING) as risk_output:
@@ -699,7 +702,7 @@ def tests_generate(session_id: str | None = None) -> TestGenerateResponse:
         domain=domain,
     ) as step_output:
         contract = json.loads(session.get("contract_json") or "{}")
-        tests = generate_tests(contract, domain)
+        tests = generate_tests(contract, domain, session_id=session["id"])
         trace.emit("Generated contract tests", evidence_count=len(tests))
 
         session_store.update_session(

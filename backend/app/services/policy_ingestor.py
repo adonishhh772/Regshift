@@ -1,6 +1,10 @@
 import re
 from typing import Any
 
+from app.services.llm.constants import CONFIDENCE_DETERMINISTIC, CONFIDENCE_LLM, LlmTaskName
+from app.services.llm.gateway import invoke_structured_task
+from app.services.llm.prompts import POLICY_INGEST_SYSTEM_PROMPT, build_policy_ingest_user_prompt
+from app.services.llm.schemas import LlmPolicyExtraction
 from app.services.policy_constants import (
     DEFAULT_AGENT_LIMITS,
     OBLIGATION_PATTERNS,
@@ -14,6 +18,36 @@ from app.services.policy_constants import (
 
 
 def ingest_policy_document(
+    title: str,
+    source_text: str,
+    domain: str | None = None,
+    session_id: str | None = None,
+) -> dict[str, Any]:
+    deterministic = _ingest_deterministic(title, source_text, domain)
+    llm_extraction, meta = invoke_structured_task(
+        LlmTaskName.POLICY_INGEST,
+        LlmPolicyExtraction,
+        POLICY_INGEST_SYSTEM_PROMPT,
+        build_policy_ingest_user_prompt(title, source_text, domain),
+        session_id=session_id,
+    )
+
+    if llm_extraction is None:
+        deterministic["extraction_source"] = CONFIDENCE_DETERMINISTIC
+        if meta is not None and meta.used_fallback_rules:
+            deterministic["llm_fallback"] = True
+        return deterministic
+
+    merged = _merge_llm_policy(deterministic, llm_extraction, title)
+    merged["extraction_source"] = CONFIDENCE_LLM
+    if meta is not None:
+        merged["llm_meta"] = meta.model_dump()
+    if llm_extraction.reasoning:
+        merged["reasoning"] = llm_extraction.reasoning
+    return merged
+
+
+def _ingest_deterministic(
     title: str,
     source_text: str,
     domain: str | None = None,
@@ -82,6 +116,46 @@ def ingest_policy_document(
         "agent_limits": agent_limits,
         "rules": rules,
         "rule_count": len(rules),
+    }
+
+
+def _merge_llm_policy(
+    deterministic: dict[str, Any],
+    extraction: LlmPolicyExtraction,
+    title: str,
+) -> dict[str, Any]:
+    merged_rules = list(deterministic.get("rules", []))
+    seen_rule_ids = {rule["id"] for rule in merged_rules}
+
+    for llm_rule in extraction.rules:
+        rule_dict = llm_rule.model_dump()
+        if rule_dict["id"] in seen_rule_ids:
+            continue
+        merged_rules.append(rule_dict)
+        seen_rule_ids.add(rule_dict["id"])
+
+    obligations = list(
+        dict.fromkeys(extraction.obligations + deterministic.get("obligations", []))
+    )
+    approval_roles = list(
+        dict.fromkeys(extraction.approval_roles + deterministic.get("approval_roles", []))
+    )
+    agent_limits = dict(DEFAULT_AGENT_LIMITS)
+    agent_limits.update(deterministic.get("agent_limits", {}))
+    agent_limits.update(extraction.agent_limits)
+
+    threshold = extraction.threshold if extraction.threshold is not None else deterministic.get("threshold")
+    domain = extraction.domain or deterministic.get("domain", "procurement")
+
+    return {
+        "title": title,
+        "domain": domain,
+        "obligations": obligations,
+        "threshold": threshold,
+        "approval_roles": approval_roles,
+        "agent_limits": agent_limits,
+        "rules": merged_rules,
+        "rule_count": len(merged_rules),
     }
 
 
