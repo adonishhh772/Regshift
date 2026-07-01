@@ -1,0 +1,21 @@
+ACME Corp HR Compliance Policy v1.0
+
+Section 2.1 - Working Hours Limit
+Employees working more than 48 hours per week must trigger a compliance warning
+and require Line Manager review before timesheet submission is accepted.
+
+Section 2.2 - Overtime Controls
+Overtime hours above 48 hours per week must not be approved without manager review.
+
+Section 3.1 - Audit Requirements
+Every compliance warning and manager review event must be logged with reviewer
+identity and timestamp.
+
+Section 4.1 - Agent Automation Limits
+No autonomous system changes to HR compliance or working-hours workflows are permitted.
+All changes require human approval before merge to production.
+
+Section 5.1 - Required Sign-off Roles
+- HR Manager
+- Line Manager
+- Compliance Officer
